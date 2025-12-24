@@ -4,8 +4,11 @@
 
 # 配置参数 apikey 在  Projects -  Security  -  API tokens  
 
+
+# 创建.env 环境文件 内容请填写完整
 ```
-API_KEY = ''
+API_KEY = 
+HETZNER_SSH_KEYS=
 TRAFFIC_THRESHOLD = 0.85  # 80% 流量阈值
 CHECK_INTERVAL = 1800  # 每小时检查一次
 ```
@@ -13,8 +16,8 @@ CHECK_INTERVAL = 1800  # 每小时检查一次
 # Telegram 配置
 
 ```
-TELEGRAM_BOT_TOKEN = ''
-TELEGRAM_CHAT_ID = ''
+TELEGRAM_BOT_TOKEN = 
+TELEGRAM_CHAT_ID = 
 ```
 
 
