@@ -2,6 +2,8 @@
 检查hzc服务器达量后删除重建服务器
 
 
+
+
 1.在运行脚本前确保你创建了对应的服务器
 
 (仅限 cpx32 (Nuremberg) | 4 vCPU | 8 GB RAM | 160 GB Local Disk | 20 TB Traffic | €10.49/mo )
@@ -14,6 +16,7 @@
 
 ### apikey 在  Projects -  Security  -  API tokens  
 ### 获取ssh_keys的id值
+
 ```
 curl \
 	-H "Authorization: Bearer $API_TOKEN" \
@@ -43,6 +46,22 @@ curl \
  }
 }
 ```
+## docker容器 
+```
+services:
+  hetzner-cloudrecreate:
+    image: aksviolet/hetzner-cloudrecreate:latest
+    container_name: hetzner-cloudrecreate
+    restart: unless-stopped
+    volumes:
+      - ./hetzner-cloudrecreate/hetzner_monitor.log:/app/hetzner_monitor.log
+      - ./hetzner-cloudrecreate/.env:/app/.env
+
+    environment:
+      - TZ=Asia/Shanghai
+```
+
+
 
   
 ```
@@ -59,6 +78,11 @@ TELEGRAM_CHAT_ID =
 
 可以走推荐链接注册  https://hetzner.cloud/?ref=PewRJ60CJHxt    
 拿到新人20欧奖励后再使用优惠码  **LTT25** 获得额外20欧
+
+
+
+
+
 
 
 
