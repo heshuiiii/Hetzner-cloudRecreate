@@ -3,8 +3,13 @@ import json
 import time
 import logging
 import sys
+import os
 from datetime import datetime
 from typing import Optional, List, Dict
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 # 修复 Windows 控制台编码问题
 if sys.platform == 'win32':
@@ -26,28 +31,11 @@ class TelegramNotifier:
     """Telegram 通知类"""
 
     def __init__(self, bot_token: str, chat_id: str):
-        """
-        初始化 Telegram 通知器
-
-        Args:
-            bot_token: Telegram Bot Token
-            chat_id: Telegram Chat ID
-        """
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
     def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
-        """
-        发送 Telegram 消息
-
-        Args:
-            message: 消息内容
-            parse_mode: 解析模式 (HTML 或 Markdown)
-
-        Returns:
-            是否发送成功
-        """
         try:
             payload = {
                 "chat_id": self.chat_id,
@@ -55,10 +43,8 @@ class TelegramNotifier:
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True
             }
-
             response = requests.post(self.api_url, json=payload, timeout=10)
             response.raise_for_status()
-
             logging.info("✓ Telegram 通知发送成功")
             return True
         except Exception as e:
@@ -66,7 +52,6 @@ class TelegramNotifier:
             return False
 
     def format_bytes(self, bytes_value: int) -> str:
-        """格式化字节数为易读格式"""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if bytes_value < 1024.0:
                 return f"{bytes_value:.2f} {unit}"
@@ -77,17 +62,8 @@ class TelegramNotifier:
                             high_traffic_servers: List[Dict],
                             processed_servers: List[Dict],
                             dry_run: bool = False) -> str:
-        """
-        创建检查报告消息
-
-        Args:
-            servers_info: 所有服务器信息列表
-            high_traffic_servers: 高流量服务器列表
-            processed_servers: 已处理的服务器列表
-            dry_run: 是否为测试模式
-        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mode = "🧪 测试模式" if dry_run else "⚡ 实际执行"
+        mode = "🧪 预览模式" if dry_run else "⚡ 实际执行"
 
         message = f"<b>🖥 Hetzner 服务器监控报告</b>\n"
         message += f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -96,88 +72,37 @@ class TelegramNotifier:
         message += f"🔢 服务器总数: {len(servers_info)}\n"
         message += f"⚠️ 高流量服务器: {len(high_traffic_servers)}\n\n"
 
-        # 所有服务器状态概览
         message += f"<b>📋 服务器状态概览:</b>\n"
         message += f"━━━━━━━━━━━━━━━━━━━━\n"
 
         for server in servers_info:
             name = server['name']
             usage_percent = server['usage_percent']
-            outgoing = self.format_bytes(server['outgoing_traffic'])
-            included = self.format_bytes(server['included_traffic'])
-
-            if usage_percent > 0.8:
-                status = "🔴"
-            elif usage_percent > 0.6:
-                status = "🟡"
-            else:
-                status = "🟢"
-
+            status = "🔴" if usage_percent > 0.8 else "🟡" if usage_percent > 0.6 else "🟢"
             message += f"\n{status} <b>{name}</b>\n"
-            message += f"   └ 流量: {outgoing} / {included}\n"
             message += f"   └ 使用率: {usage_percent:.1%}\n"
 
-        # 高流量服务器详细信息
-        if high_traffic_servers:
-            message += f"\n<b>🚨 高流量服务器详情:</b>\n"
-            message += f"━━━━━━━━━━━━━━━━━━━━\n"
-
-            for idx, server in enumerate(high_traffic_servers, 1):
-                message += f"\n<b>#{idx} {server['name']}</b>\n"
-                message += f"├ ID: {server['id']}\n"
-                message += f"├ IPv4: {server['ipv4']}\n"
-                message += f"├ 类型: {server['server_type']}\n"
-                message += f"├ 数据中心: {server['datacenter']}\n"
-                message += f"├ 镜像: {server['image']}\n"
-                message += f"├ 流量使用: {self.format_bytes(server['outgoing_traffic'])}\n"
-                message += f"├ 流量配额: {self.format_bytes(server['included_traffic'])}\n"
-                message += f"└ 使用率: <b>{server['usage_percent']:.1%}</b>\n"
-
-        # 处理结果
         if processed_servers:
             message += f"\n<b>✅ 处理结果:</b>\n"
             message += f"━━━━━━━━━━━━━━━━━━━━\n"
-
             for server in processed_servers:
-                if server['success']:
-                    icon = "✅" if not dry_run else "🧪"
-                    status = "处理成功" if not dry_run else "测试完成(未实际执行)"
-                else:
-                    icon = "❌"
-                    status = "处理失败"
-
+                icon = "✅" if server['success'] and not dry_run else "❌"
+                status = "处理成功" if server['success'] else f"失败: {server.get('error', '未知错误')}"
                 message += f"\n{icon} <b>{server['name']}</b>\n"
                 message += f"   └ 状态: {status}\n"
-
-                if dry_run and server['success']:
-                    message += f"   └ 将执行:\n"
-                    message += f"      • 创建快照\n"
-                    message += f"      • 关闭并删除服务器\n"
-                    message += f"      • 创建新服务器\n"
-                    message += f"      • 使用快照恢复数据\n"
-        else:
-            message += f"\n✅ <b>所有服务器流量使用正常</b>\n"
-
-        message += f"\n━━━━━━━━━━━━━━━━━━━━\n"
-        message += f"💡 监控系统运行正常"
-
+                if 'new_ip' in server:
+                    message += f"   └ IP: {server['new_ip']}\n"
         return message
 
 
 class HetznerServerManager:
     def __init__(self, api_key: str, traffic_threshold: float = 0.8,
-                 telegram_notifier: Optional[TelegramNotifier] = None):
-        """
-        初始化 Hetzner 服务器管理器
-
-        Args:
-            api_key: Hetzner API 密钥
-            traffic_threshold: 流量使用阈值(0-1之间),默认0.8即80%
-            telegram_notifier: Telegram 通知器实例
-        """
+                 telegram_notifier: Optional[TelegramNotifier] = None,
+                 ssh_keys: List[int] = None):
         self.api_key = api_key
         self.traffic_threshold = traffic_threshold
         self.telegram_notifier = telegram_notifier
+        self.ssh_keys = ssh_keys or []
         self.base_url = "https://api.hetzner.cloud/v1"
         self.headers = {
             'Authorization': f'Bearer {api_key}',
@@ -185,412 +110,248 @@ class HetznerServerManager:
         }
 
     def get_servers(self) -> Optional[list]:
-        """获取所有服务器列表"""
         try:
-            response = requests.get(
-                f"{self.base_url}/servers",
-                headers=self.headers
-            )
+            response = requests.get(f"{self.base_url}/servers", headers=self.headers)
             response.raise_for_status()
             return response.json()['servers']
         except Exception as e:
             logging.error(f"获取服务器列表失败: {e}")
             return None
 
-    def create_snapshot(self, server_id: int, server_name: str) -> Optional[int]:
-        """创建服务器快照"""
-        try:
-            dt_string = datetime.now().strftime("%Y%m%d-%H%M%S")
-            payload = {
-                "description": f"{server_name}-{dt_string}",
-                "labels": {"auto_snapshot": "true"},
-                "type": "snapshot"
-            }
+    def get_server_ipv4_id(self, server: dict) -> Optional[int]:
+        if server.get('public_net') and server['public_net'].get('ipv4'):
+            return server['public_net']['ipv4'].get('id')
+        return None
 
-            logging.info(f"正在为服务器 {server_name} 创建快照...")
-            response = requests.post(
-                f"{self.base_url}/servers/{server_id}/actions/create_image",
-                headers=self.headers,
-                json=payload
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            # 等待快照完成
-            time.sleep(150)
-
-            if data['action'].get('error') is None:
-                snap_id = data['image']['id']
-                logging.info(f"✓ 快照创建成功 (ID: {snap_id})")
-                return snap_id
-            else:
-                logging.error(f"✗ 快照创建失败: {data['action']['error']}")
-                return None
-        except Exception as e:
-            logging.error(f"创建快照时发生错误: {e}")
-            return None
-
-    def power_off_server(self, server_id: int) -> bool:
-        """关闭服务器"""
-        try:
-            logging.info(f"正在关闭服务器 {server_id}...")
-            response = requests.post(
-                f"{self.base_url}/servers/{server_id}/actions/poweroff",
-                headers=self.headers
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            time.sleep(10)
-
-            if data['action'].get('error') is None:
-                logging.info("✓ 服务器已关闭")
+    def wait_for_server_deletion(self, server_id: int, max_wait: int = 120) -> bool:
+        logging.info(f"等待服务器 {server_id} 删除完成...")
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            response = requests.get(f"{self.base_url}/servers/{server_id}", headers=self.headers)
+            if response.status_code == 404:
+                logging.info("✓ 服务器已完全删除")
                 return True
-            else:
-                logging.error(f"✗ 关闭服务器失败: {data['action']['error']}")
-                return False
-        except Exception as e:
-            logging.error(f"关闭服务器时发生错误: {e}")
-            return False
-
-    def unassign_ip(self, ipv4_id: int) -> bool:
-        """取消IP分配"""
-        try:
-            logging.info(f"正在取消IP分配 {ipv4_id}...")
-            response = requests.post(
-                f"{self.base_url}/primary_ips/{ipv4_id}/actions/unassign",
-                headers=self.headers
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            time.sleep(10)
-
-            if data['action'].get('error') is None:
-                logging.info("✓ IP已取消分配")
-                return True
-            else:
-                logging.error(f"✗ 取消IP分配失败: {data['action']['error']}")
-                return False
-        except Exception as e:
-            logging.error(f"取消IP分配时发生错误: {e}")
-            return False
+            time.sleep(5)
+        return False
 
     def delete_server(self, server_id: int) -> bool:
-        """删除服务器"""
         try:
             logging.info(f"正在删除服务器 {server_id}...")
-            response = requests.delete(
-                f"{self.base_url}/servers/{server_id}",
-                headers=self.headers
-            )
-            response.raise_for_status()
-
-            time.sleep(10)
-            logging.info("✓ 服务器已删除")
-            return True
+            requests.delete(f"{self.base_url}/servers/{server_id}", headers=self.headers).raise_for_status()
+            return self.wait_for_server_deletion(server_id)
         except Exception as e:
             logging.error(f"删除服务器时发生错误: {e}")
             return False
 
-    def create_server(self, name: str, datacenter: str, server_type: str,
-                      ipv4_id: int) -> Optional[int]:
-        """创建新服务器"""
-        try:
-            payload = {
-                "datacenter": datacenter,
-                "image": "ubuntu-20.04",
-                "name": name,
-                "public_net": {
-                    "enable_ipv4": True,
-                    "enable_ipv6": False,
-                    "ipv4": ipv4_id
-                },
-                "server_type": server_type,
-                "start_after_create": True
-            }
+    def wait_for_ip_ready(self, ipv4_id: int, max_retries: int = 12) -> bool:
+        """检查 Primary IP 是否已释放（变为未分配状态）"""
+        logging.info(f"检查 IP (ID: {ipv4_id}) 是否已释放...")
+        for i in range(max_retries):
+            try:
+                response = requests.get(f"{self.base_url}/primary_ips/{ipv4_id}", headers=self.headers)
+                response.raise_for_status()
+                data = response.json()
 
-            logging.info(f"正在创建新服务器 {name}...")
-            response = requests.post(
-                f"{self.base_url}/servers",
-                headers=self.headers,
-                json=payload
-            )
-            response.raise_for_status()
-            data = response.json()
+                # 如果 assignee_id 为 None，说明 IP 已经彻底释放
+                if data['primary_ip']['assignee_id'] is None:
+                    logging.info(f"✓ IP (ID: {ipv4_id}) 已就绪")
+                    return True
 
-            time.sleep(60)
+                logging.info(f"  IP 仍处于占用状态，等待中... ({i + 1}/{max_retries})")
+                time.sleep(5)  # 每 5 秒检查一次
+            except Exception as e:
+                logging.error(f"检查 IP 状态时出错: {e}")
+                time.sleep(5)
+        return False
 
-            if data['action'].get('error') is None:
-                server_id = data['server']['id']
-                logging.info(f"✓ 新服务器创建成功 (ID: {server_id})")
-                return server_id
-            else:
-                logging.error(f"✗ 创建服务器失败: {data['action']['error']}")
-                return None
-        except Exception as e:
-            logging.error(f"创建服务器时发生错误: {e}")
+    def create_server_from_snapshot(self, server_config: Dict, snapshot_id: int,
+                                    ipv4_id: int, ipv4_ip: str) -> Optional[int]:
+        """增强版：带 IP 检查和重试机制的创建方法"""
+
+        # 步骤 1: 确保 IP 已经从旧服务器释放
+        if not self.wait_for_ip_ready(ipv4_id):
+            logging.error(f"✗ IP (ID: {ipv4_id}) 释放超时，无法继续创建")
             return None
 
-    def rebuild_server(self, server_id: int, snap_id: int) -> bool:
-        """使用快照重建服务器"""
-        try:
-            payload = {"image": str(snap_id)}
+        # 步骤 2: 构建 Payload
+        payload = {
+            "name": server_config['name'],
+            "ssh_keys": self.ssh_keys,
+            "location": 2,
+            "image": int(snapshot_id),
+            "server_type": 110,
+            "firewalls": [],
+            "public_net": {
+                "enable_ipv4": True,
+                "enable_ipv6": True,
+                "ipv4": int(ipv4_id)
+            },
+            "start_after_create": True
+        }
 
-            logging.info(f"正在使用快照重建服务器 {server_id}...")
-            response = requests.post(
-                f"{self.base_url}/servers/{server_id}/actions/rebuild",
-                headers=self.headers,
-                json=payload
-            )
-            response.raise_for_status()
-            data = response.json()
+        # 步骤 3: 尝试创建（带 3 次 422 重试机制）
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                logging.info(f"正在尝试创建服务器 (尝试 {attempt + 1}/{max_attempts})...")
+                response = requests.post(f"{self.base_url}/servers", headers=self.headers, json=payload)
 
-            if data['action'].get('error') is None:
-                logging.info("✓ 服务器重建成功!")
-                return True
-            else:
-                logging.error(f"✗ 重建服务器失败: {data['action']['error']}")
-                return False
-        except Exception as e:
-            logging.error(f"重建服务器时发生错误: {e}")
-            return False
+                if response.status_code == 201:
+                    data = response.json()
+                    server_id = data['server']['id']
+                    logging.info(f"✓ 新服务器创建成功 (ID: {server_id})")
+                    return server_id
 
-    def process_high_traffic_server(self, server: dict, dry_run: bool = False) -> bool:
-        """
-        处理高流量服务器的完整流程
+                # 如果遇到 422 错误，检查是否是 IP 占用
+                if response.status_code == 422:
+                    error_data = response.json()
+                    if error_data.get('error', {}).get('code') == 'primary_ip_assigned':
+                        logging.warning("⚠ API 报告 IP 仍被分配，增加额外等待时间...")
+                        time.sleep(10)  # 额外等待 10 秒
+                        continue  # 重试
 
-        Args:
-            server: 服务器信息字典
-            dry_run: 是否为测试模式(True=仅打印不执行, False=实际执行)
-        """
+                # 其他错误则直接抛出
+                logging.error(f"✗ API 返回不可恢复错误: {response.text}")
+                response.raise_for_status()
+
+            except Exception as e:
+                logging.error(f"创建请求异常: {e}")
+                if attempt == max_attempts - 1:
+                    return None
+                time.sleep(5)
+
+        return None
+
+    def process_high_traffic_server(self, server: dict, dry_run: bool = False) -> Dict:
         server_id = server['id']
         server_name = server['name']
-        ipv4 = server['public_net']['ipv4']['ip']
-        ipv4_id = server['public_net']['ipv4']['id']
-        server_type = server['server_type']['name']
-        datacenter = server['datacenter']['name']
-        image = server['image']['name'] if server.get('image') else 'ubuntu-20.04'
+        snapshot_id = server['image']['id'] if server.get('image') and server['image']['type'] == 'snapshot' else None
 
-        logging.info(f"\n{'=' * 60}")
-        if dry_run:
-            logging.info(f"[测试模式] 高流量服务器处理预览: {server_name}")
-        else:
-            logging.info(f"开始处理高流量服务器: {server_name}")
-        logging.info(f"{'=' * 60}")
+        ipv4_id = self.get_server_ipv4_id(server)
+        ipv4_ip = server['public_net']['ipv4']['ip'] if ipv4_id else 'N/A'
 
-        # 打印服务器信息
-        logging.info(f"\n当前服务器配置:")
-        logging.info(f"  服务器ID: {server_id}")
-        logging.info(f"  服务器名称: {server_name}")
-        logging.info(f"  IPv4地址: {ipv4}")
-        logging.info(f"  IPv4 ID: {ipv4_id}")
-        logging.info(f"  服务器类型: {server_type}")
-        logging.info(f"  数据中心: {datacenter}")
-        logging.info(f"  当前镜像: {image}")
+        if not snapshot_id or not ipv4_id:
+            return {'name': server_name, 'success': False, 'error': '缺失快照或IP ID'}
 
         if dry_run:
-            logging.info(f"\n[测试模式] 将执行以下操作:")
-            logging.info(f"  1. 创建快照: {server_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-            logging.info(f"  2. 关闭服务器: {server_id}")
-            logging.info(f"  3. 取消IP分配: {ipv4_id} ({ipv4})")
-            logging.info(f"  4. 删除服务器: {server_id}")
-            logging.info(f"  5. 创建新服务器配置:")
-            logging.info(f"     - 名称: {server_name}")
-            logging.info(f"     - 类型: {server_type}")
-            logging.info(f"     - 数据中心: {datacenter}")
-            logging.info(f"     - 镜像: ubuntu-20.04")
-            logging.info(f"     - IPv4: {ipv4_id} ({ipv4})")
-            logging.info(f"     - 启动: True")
-            logging.info(f"  6. 使用快照重建新服务器")
-            logging.info(f"\n[测试模式] 未实际执行任何操作")
-            logging.info(f"{'=' * 60}\n")
-            return True
+            logging.info(f"[预览] 将重建服务器 {server_name}")
+            return {'name': server_name, 'success': True, 'new_ip': ipv4_ip}
 
-        # 实际执行模式
-        # 1. 创建快照
-        snap_id = self.create_snapshot(server_id, server_name)
-        if not snap_id:
-            return False
-
-        # 2. 关闭服务器
-        if not self.power_off_server(server_id):
-            return False
-
-        # 3. 取消IP分配
-        if not self.unassign_ip(ipv4_id):
-            return False
-
-        # 4. 删除服务器
+        # 1. 删除
         if not self.delete_server(server_id):
-            return False
+            return {'name': server_name, 'success': False, 'error': '删除失败'}
 
-        # 5. 创建新服务器
-        new_server_id = self.create_server(server_name, datacenter,
-                                           server_type, ipv4_id)
-        if not new_server_id:
-            return False
+        # 2. 创建
+        new_id = self.create_server_from_snapshot(server, snapshot_id, ipv4_id, ipv4_ip)
+        if new_id:
+            return {'name': server_name, 'success': True, 'new_server_id': new_id, 'new_ip': ipv4_ip}
 
-        # 6. 使用快照重建
-        if not self.rebuild_server(new_server_id, snap_id):
-            return False
-
-        logging.info(f"{'=' * 60}")
-        logging.info(f"服务器 {server_name} 处理完成!")
-        logging.info(f"{'=' * 60}\n")
-        return True
+        return {'name': server_name, 'success': False, 'error': '重建失败'}
 
     def check_and_process_servers(self, dry_run: bool = False):
-        """
-        检查所有服务器并处理高流量服务器
-
-        Args:
-            dry_run: 是否为测试模式(True=仅打印不执行, False=实际执行)
-        """
-        mode_text = "[测试模式] " if dry_run else ""
-        logging.info(f"\n{mode_text}开始检查服务器流量使用情况...")
-
+        """检查所有服务器并回显进度"""
         servers = self.get_servers()
         if not servers:
-            logging.error("无法获取服务器列表")
+            logging.error("无法获取服务器列表，请检查网络或 API Key")
             return
 
-        # 收集所有服务器信息
-        servers_info = []
-        high_traffic_servers = []
-        processed_servers = []
+        print(f"\n🔍 [扫描中] 正在检查 {len(servers)} 台服务器的流量...")
+
+        servers_info, high_traffic_servers, processed_servers = [], [], []
 
         for server in servers:
-            name = server['name']
-            server_id = server['id']
-            outgoing_traffic = int(server.get('outgoing_traffic', 0))
-            included_traffic = int(server.get('included_traffic', 1))
-            ipv4 = server['public_net']['ipv4']['ip']
-            ipv4_id = server['public_net']['ipv4']['id']
-            server_type = server['server_type']['name']
-            datacenter = server['datacenter']['name']
-            image = server['image']['name'] if server.get('image') else 'ubuntu-20.04'
+            outgoing = int(server.get('outgoing_traffic', 0))
+            included = int(server.get('included_traffic', 1))
+            usage = outgoing / included
 
-            # 计算使用百分比
-            percent_usage = outgoing_traffic / included_traffic if included_traffic > 0 else 0
+            # 实时回显当前处理的服务器
+            status_icon = "⚠️" if usage >= self.traffic_threshold else "✅"
+            print(f"  {status_icon} {server['name']:<40} | 使用率: {usage:>6.1%}")
 
-            # 记录服务器信息
             server_info = {
-                'id': server_id,
-                'name': name,
-                'ipv4': ipv4,
-                'ipv4_id': ipv4_id,
-                'server_type': server_type,
-                'datacenter': datacenter,
-                'image': image,
-                'outgoing_traffic': outgoing_traffic,
-                'included_traffic': included_traffic,
-                'usage_percent': percent_usage
+                'name': server['name'],
+                'usage_percent': usage,
+                'outgoing_traffic': outgoing,
+                'included_traffic': included
             }
             servers_info.append(server_info)
 
-            logging.info(f"\n服务器: {name}")
-            logging.info(f"  流量使用: {outgoing_traffic:,} / {included_traffic:,} bytes")
-            logging.info(f"  使用率: {percent_usage:.1%}")
-
-            if percent_usage > self.traffic_threshold:
-                logging.warning(f"  ⚠ 流量使用超过阈值 {self.traffic_threshold:.0%}!")
+            if usage >= self.traffic_threshold:
                 high_traffic_servers.append(server_info)
+                # 处理超标服务器
+                result = self.process_high_traffic_server(server, dry_run)
+                processed_servers.append(result)
 
-                # 处理服务器
-                success = self.process_high_traffic_server(server, dry_run=dry_run)
-                processed_servers.append({
-                    'name': name,
-                    'success': success
-                })
-            else:
-                logging.info(f"  ✓ 流量使用正常")
-
-        # 发送 Telegram 通知
+        # 发送通知逻辑保持不变...
         if self.telegram_notifier:
             try:
-                message = self.telegram_notifier.create_check_report(
-                    servers_info=servers_info,
-                    high_traffic_servers=high_traffic_servers,
-                    processed_servers=processed_servers,
-                    dry_run=dry_run
+                report = self.telegram_notifier.create_check_report(
+                    servers_info, high_traffic_servers, processed_servers, dry_run
                 )
-                self.telegram_notifier.send_message(message)
+                self.telegram_notifier.send_message(report)
             except Exception as e:
-                logging.error(f"发送 Telegram 通知时出错: {e}")
+                logging.error(f"发送通知失败: {e}")
 
-    def run_monitor(self, check_interval: int = 3600):
-        """
-        持续监控模式
-
-        Args:
-            check_interval: 检查间隔时间(秒),默认3600秒(1小时)
-        """
-        logging.info(f"启动监控服务,检查间隔: {check_interval}秒")
+    def run_monitor(self, interval: int):
+        """持续监控模式 - 增加实时控制台回显"""
+        logging.info(f"🚀 监控服务已启动，检查间隔: {interval}秒")
 
         while True:
             try:
-                self.check_and_process_servers()
-                logging.info(f"\n下次检查时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
-                             f"(等待 {check_interval} 秒)\n")
-                time.sleep(check_interval)
+                # 执行检查
+                self.check_and_process_servers(dry_run=False)
+
+                # 检查结束后的处理
+                next_check_time = datetime.now().timestamp() + interval
+                next_check_str = datetime.fromtimestamp(next_check_time).strftime('%H:%M:%S')
+
+                print(f"\n{'=' * 40}")
+                logging.info(f"✅ 本轮检查完成。下次检查时间: {next_check_str}")
+                print(f"{'=' * 40}\n")
+
+                # 倒计时逻辑
+                for remaining in range(interval, 0, -1):
+                    # 使用 \r 实现单行覆盖输出，不会刷屏
+                    sys.stdout.write(f"\r⏳ 距离下一次扫描还有: {remaining:4d} 秒... (按 Ctrl+C 停止)")
+                    sys.stdout.flush()
+                    time.sleep(1)
+
+                print("\n\n🔄 正在开始新一轮扫描...")
+
             except KeyboardInterrupt:
-                logging.info("\n监控服务已停止")
+                print("\n\n🛑 监控服务已被用户手动停止")
                 break
             except Exception as e:
-                logging.error(f"监控过程中发生错误: {e}")
-                time.sleep(60)  # 发生错误时等待1分钟后重试
+                logging.error(f"❌ 监控运行中发生错误: {e}")
+                logging.info("将在 60 秒后重试...")
+                time.sleep(60)
 
 
 def main():
-    # 配置参数
-    API_KEY = ''
-    TRAFFIC_THRESHOLD = 0.85  # 80% 流量阈值
-    CHECK_INTERVAL = 1800  # 每小时检查一次
+    API_KEY = os.getenv('HETZNER_API_KEY')
+    THRESHOLD = float(os.getenv('TRAFFIC_THRESHOLD', '0.8'))
+    INTERVAL = int(os.getenv('CHECK_INTERVAL', '1800'))
 
-    # Telegram 配置
-    TELEGRAM_BOT_TOKEN = ''
-    TELEGRAM_CHAT_ID = ''
+    # 解析 SSH KEYS (例如环境变量里是 "103101822")
+    ssh_keys_raw = os.getenv('HETZNER_SSH_KEYS', '')
+    ssh_keys = [int(k.strip()) for k in ssh_keys_raw.split(',') if k.strip().isdigit()]
 
-    # 创建 Telegram 通知器
-    telegram_notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
+    tg_id = os.getenv('TELEGRAM_CHAT_ID')
+    notifier = TelegramNotifier(tg_token, tg_id) if tg_token and tg_id else None
 
-    # 测试 Telegram 连接
-    logging.info("测试 Telegram 连接...")
-    test_message = "🤖 <b>Hetzner 监控系统已启动</b>\n\n✅ Telegram 通知功能正常"
-    if telegram_notifier.send_message(test_message):
-        logging.info("✓ Telegram 连接测试成功")
-    else:
-        logging.warning("⚠ Telegram 连接测试失败,将继续运行但不发送通知")
-        telegram_notifier = None
+    manager = HetznerServerManager(API_KEY, THRESHOLD, notifier, ssh_keys)
 
-    # 创建管理器实例
-    manager = HetznerServerManager(API_KEY, TRAFFIC_THRESHOLD, telegram_notifier)
-
-    # 选择运行模式
-    print("\n选择运行模式:")
-    print("1. 单次检查(实际执行)")
-    print("2. 持续监控(实际执行)")
-    print("3. 测试模式(仅查看,不实际执行删除和创建)")
-    choice = input("请输入选项 (1/2/3): ").strip()
+    print("\n1. 单次检查\n2. 持续监控\n3. 预览模式")
+    choice = input("请选择: ").strip()
 
     if choice == "1":
-        # 单次检查 - 实际执行
-        manager.check_and_process_servers(dry_run=False)
+        manager.check_and_process_servers(False)
     elif choice == "2":
-        # 持续监控 - 实际执行
-        manager.run_monitor(CHECK_INTERVAL)
+        manager.run_monitor(INTERVAL)
     elif choice == "3":
-        # 测试模式 - 仅打印不执行
-        print("\n" + "=" * 60)
-        print("测试模式: 将显示所有要执行的操作,但不会实际执行")
-        print("=" * 60 + "\n")
-        manager.check_and_process_servers(dry_run=True)
-    else:
-        print("无效选项")
+        manager.check_and_process_servers(True)
 
 
 if __name__ == "__main__":
-
     main()
-
