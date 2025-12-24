@@ -68,7 +68,7 @@ class TelegramNotifier:
         message = f"<b>🖥 Hetzner 服务器监控报告</b>\n"
         message += f"━━━━━━━━━━━━━━━━━━━━\n"
         message += f"🕐 检查时间: {timestamp}\n"
-        message += f"📊 模式: {mode}\n"
+        # message += f"📊 模式: {mode}\n"
         message += f"🔢 服务器总数: {len(servers_info)}\n"
         message += f"⚠️ 高流量服务器: {len(high_traffic_servers)}\n\n"
 
@@ -355,3 +355,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
