@@ -19,4 +19,4 @@ TELEGRAM_CHAT_ID = ''
 
 
 可以走推荐链接注册  https://hetzner.cloud/?ref=PewRJ60CJHxt    
-拿到新人20欧奖励后再使用优惠码  LTT25 获得额外20欧
+拿到新人20欧奖励后再使用优惠码  **LTT25** 获得额外20欧
