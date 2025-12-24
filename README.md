@@ -48,7 +48,7 @@ curl \
 ```
 API_KEY = 
 HETZNER_SSH_KEYS=
-TRAFFIC_THRESHOLD = 0.85  # 80% 流量阈值
+TRAFFIC_THRESHOLD = 0.85  # 85% 流量阈值  17T的时候重建
 CHECK_INTERVAL = 1800  # 每小时检查一次
 ```
 ```
