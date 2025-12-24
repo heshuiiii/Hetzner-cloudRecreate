@@ -4,7 +4,7 @@
 
 1.在运行脚本前确保你创建了对应的服务器
 
-(仅限 cpx32 (Nuremberg) | 4 vCPU | 8 GB RAM | 160 GB Local Disk | 20 TB Traffic | €10.49/mo ) 
+**(仅限 cpx32 (Nuremberg) | 4 vCPU | 8 GB RAM | 160 GB Local Disk | 20 TB Traffic | €10.49/mo ) **
 
 2.设置了IP保护 有几台服务器就设置几个IP保护 ssh_key的id填写正确
 
