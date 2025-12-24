@@ -2,9 +2,7 @@
 检查hzc服务器达量后删除重建服务器
 
 
-在运行脚本前确保你创建了对应的服务器 设置了IP保护 ssh_key的id填写正确
-
-
+在运行脚本前确保你创建了对应的服务器(仅限 cpx32 (Nuremberg) | 4 vCPU | 8 GB RAM | 160 GB Local Disk | 20 TB Traffic | €10.49/mo ) CX系列常时都是缺货  设置了IP保护 ssh_key的id填写正确
 
 
 # 创建.env 环境文件 内容请填写完整   telegram参数也是必填
