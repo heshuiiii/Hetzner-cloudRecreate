@@ -13,7 +13,7 @@ TRAFFIC_THRESHOLD = 0.85  # 80% 流量阈值
 CHECK_INTERVAL = 1800  # 每小时检查一次
 ```
 
-# Telegram 配置
+## Telegram 配置
 
 ```
 TELEGRAM_BOT_TOKEN = 
