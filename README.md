@@ -2,7 +2,7 @@
 检查hzc服务器达量后删除重建服务器
 
 
-# 配置参数 apikey 在  Projects -  Security  -  API tokens  
+# apikey 在  Projects -  Security  -  API tokens  
 
 
 # 创建.env 环境文件 内容请填写完整
