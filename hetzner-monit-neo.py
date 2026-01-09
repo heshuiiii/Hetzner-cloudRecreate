@@ -7,6 +7,8 @@ import os
 from datetime import datetime, time as dt_time
 from typing import Optional, List, Dict, Set
 from dotenv import load_dotenv
+from flask import Flask, jsonify
+from threading import Thread
 
 load_dotenv()
 
@@ -31,19 +33,17 @@ class TimeWindowManager:
     def __init__(self, start_hour: int = 8, end_hour: int = 23, end_minute: int = 30):
         self.start_time = dt_time(start_hour, 0)
         self.end_time = dt_time(end_hour, end_minute)
-        self.servers_deleted = False  # 标记是否已删除服务器
-        self.crosses_midnight = start_hour > end_hour  # 判断是否跨午夜
+        self.servers_deleted = False
+        self.servers_created = False
+        self.crosses_midnight = start_hour > end_hour
         
     def is_in_work_window(self) -> bool:
         """判断当前是否在工作时段（支持跨午夜）"""
         now = datetime.now().time()
         
         if self.crosses_midnight:
-            # 跨午夜情况：22:00-08:50
-            # 工作时段 = 22:00-23:59 或 00:00-08:50
             return now >= self.start_time or now <= self.end_time
         else:
-            # 正常情况：08:00-23:30
             return self.start_time <= now <= self.end_time
     
     def should_delete_servers(self) -> bool:
@@ -54,23 +54,32 @@ class TimeWindowManager:
             return False
         
         if self.crosses_midnight:
-            # 跨午夜：在结束时间之后且在开始时间之前（即非工作时段）
             is_after_end = now > self.end_time
             is_before_start = now < self.start_time
             return is_after_end and is_before_start
         else:
-            # 正常：在结束时间之后
             return now > self.end_time
     
-    def reset_delete_flag(self):
-        """重置删除标记（重新进入工作时段时）"""
-        if self.is_in_work_window() and self.servers_deleted:
-            logging.info("🌅 进入新的工作时段，重置删除标记")
-            self.servers_deleted = False
+    def should_create_initial_servers(self) -> bool:
+        """判断是否应该创建初始服务器（刚进入工作时段且未创建）"""
+        return self.is_in_work_window() and not self.servers_created
+    
+    def reset_flags_on_work_start(self):
+        """重置标记（重新进入工作时段时）"""
+        if self.is_in_work_window():
+            if self.servers_deleted:
+                logging.info("🌅 进入新的工作时段，重置删除标记")
+                self.servers_deleted = False
+                self.servers_created = False
     
     def mark_as_deleted(self):
         """标记服务器已删除"""
         self.servers_deleted = True
+        self.servers_created = False
+    
+    def mark_as_created(self):
+        """标记初始服务器已创建"""
+        self.servers_created = True
     
     def get_status_info(self) -> str:
         """获取当前状态信息"""
@@ -110,13 +119,11 @@ class DownloaderAPI:
             response.raise_for_status()
             response_data = response.json()
             
-            # 处理 {success: true, data: [...]} 格式
             if isinstance(response_data, dict) and 'data' in response_data:
                 all_downloaders = response_data['data']
             else:
                 all_downloaders = response_data
             
-            # 筛选出 alias 包含 'Hetzner' 的下载器
             hetzner_downloaders = [
                 d for d in all_downloaders 
                 if isinstance(d, dict) and 'Hetzner' in d.get('alias', '')
@@ -144,13 +151,11 @@ class DownloaderAPI:
             logging.warning(f"⚠ 下载器 {downloader_alias} 没有 clientUrl")
             return False
         
-        # 提取旧IP
         old_ip = self.extract_ip_from_url(old_url)
         if not old_ip:
             logging.warning(f"⚠ 无法从 URL {old_url} 中提取 IP")
             return False
         
-        # 替换IP
         new_url = old_url.replace(old_ip, new_ip)
         downloader['clientUrl'] = new_url
         
@@ -158,7 +163,6 @@ class DownloaderAPI:
             logging.info(f"📝 更新下载器 {downloader_alias}:")
             logging.info(f"   {old_ip} → {new_ip}")
             
-            # 发送更新请求
             response = requests.post(
                 f"{self.base_url}/api/downloader/modify",
                 headers=self.headers,
@@ -175,17 +179,7 @@ class DownloaderAPI:
             return False
     
     def sync_downloaders_with_servers(self, server_ips: List[str]) -> Dict[str, int]:
-        """
-        同步下载器IP到服务器IP列表 - 强制负载均衡版
-        
-        逻辑：
-        1. 统计每个下载器当前使用的 IP
-        2. 检测 IP 冲突（多个下载器用同一个IP）
-        3. 强制分配：确保每个下载器使用不同的服务器 IP
-        4. 优先保持有效且无冲突的 IP
-        
-        返回: {'updated': 更新数量, 'kept': 保持数量, 'failed': 失败数量}
-        """
+        """同步下载器IP到服务器IP列表 - 强制负载均衡版"""
         if not server_ips:
             logging.warning("⚠ 没有可用的服务器 IP，跳过同步")
             return {'updated': 0, 'kept': 0, 'failed': 0}
@@ -197,7 +191,6 @@ class DownloaderAPI:
         
         logging.info(f"🔍 开始同步下载器IP，当前服务器IP: {', '.join(server_ips)}")
         
-        # 统计当前 IP 使用情况
         from collections import Counter
         current_ips = {}
         ip_counter = Counter()
@@ -211,39 +204,31 @@ class DownloaderAPI:
                 current_ips[alias] = current_ip
                 ip_counter[current_ip] += 1
         
-        # 检测冲突（多个下载器用同一个IP）
         duplicate_ips = {ip for ip, count in ip_counter.items() if count > 1}
         if duplicate_ips:
             logging.warning(f"⚠ 检测到IP冲突: {', '.join(duplicate_ips)} 被多个下载器使用")
         
-        # 准备分配方案
         available_ips = server_ips.copy()
-        assignment = {}  # {downloader_alias: target_ip}
+        assignment = {}
         
-        # 第一步：为无冲突且有效的下载器保留当前IP
         for alias, current_ip in current_ips.items():
-            # 条件：IP在服务器列表中 且 没有冲突
             if current_ip in server_ips and current_ip not in duplicate_ips:
                 assignment[alias] = current_ip
                 if current_ip in available_ips:
                     available_ips.remove(current_ip)
                 logging.info(f"✓ 下载器 {alias} ({current_ip}) 保持现有IP（无冲突）")
         
-        # 第二步：为其他下载器分配新IP
         for downloader in downloaders:
             alias = downloader.get('alias', 'Unknown')
             
-            # 如果已经分配过，跳过
             if alias in assignment:
                 continue
             
             current_ip = current_ips.get(alias)
             
-            # 分配一个未使用的IP
             if available_ips:
                 target_ip = available_ips.pop(0)
             else:
-                # 如果没有未使用的IP，轮询分配
                 target_ip = server_ips[len(assignment) % len(server_ips)]
             
             assignment[alias] = target_ip
@@ -258,7 +243,6 @@ class DownloaderAPI:
             else:
                 logging.info(f"⚠ 下载器 {alias} 无IP，分配为 {target_ip}")
         
-        # 执行更新
         updated = 0
         kept = 0
         failed = 0
@@ -272,7 +256,6 @@ class DownloaderAPI:
                 failed += 1
                 continue
             
-            # 判断是否需要更新
             if current_ip == target_ip:
                 kept += 1
             else:
@@ -281,10 +264,8 @@ class DownloaderAPI:
                 else:
                     failed += 1
         
-        # 输出统计
         logging.info(f"📊 下载器同步完成: 更新 {updated} 个, 保持 {kept} 个, 失败 {failed} 个")
         
-        # 显示最终分配结果
         logging.info(f"📋 最终IP分配方案:")
         for alias, ip in assignment.items():
             logging.info(f"   • {alias}: {ip}")
@@ -323,7 +304,8 @@ class TelegramNotifier:
                                 high_traffic_servers: List[Dict],
                                 processed_servers: List[Dict],
                                 time_window_info: str = "",
-                                dry_run: bool = False) -> str:
+                                dry_run: bool = False,
+                                initial_creation: bool = False) -> str:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             message = f"<b>🖥 Hetzner 服务器监控报告</b>\n"
@@ -331,31 +313,36 @@ class TelegramNotifier:
             message += f"🕐 检查时间: {timestamp}\n"
             if time_window_info:
                 message += f"⏰ {time_window_info}\n"
-            message += f"⚠️ 高流量预警: {len(high_traffic_servers)} 台\n"
+            
+            if initial_creation:
+                message += f"🌅 类型: 工作时段初始化\n"
+            else:
+                message += f"⚠️ 高流量预警: {len(high_traffic_servers)} 台\n"
             
             if dry_run:
                 message += f"🔍 模式: 仅检测 (未执行重建)\n"
             message += "\n"
 
-            message += f"<b>📋 实时流量概览:</b>\n"
-            message += f"━━━━━━━━━━━━━━━━━━━━\n"
+            if servers_info:
+                message += f"<b>📋 实时流量概览:</b>\n"
+                message += f"━━━━━━━━━━━━━━━━━━━━\n"
 
-            for server in servers_info:
-                name = server['name']
-                usage = server['usage_percent']
-                out_gb = server['outgoing_traffic'] / (1024**3)
-                inc_gb = server['included_traffic'] / (1024**3)
-                
-                if usage >= 0.8: 
-                    status_icon = "🔴"
-                elif usage >= 0.6: 
-                    status_icon = "🟡"
-                else: 
-                    status_icon = "🟢"
+                for server in servers_info:
+                    name = server['name']
+                    usage = server['usage_percent']
+                    out_gb = server['outgoing_traffic'] / (1024**3)
+                    inc_gb = server['included_traffic'] / (1024**3)
+                    
+                    if usage >= 0.8: 
+                        status_icon = "🔴"
+                    elif usage >= 0.6: 
+                        status_icon = "🟡"
+                    else: 
+                        status_icon = "🟢"
 
-                message += f"\n{status_icon} <b>{name}</b>\n"
-                message += f"   └ 占比: <code>{usage:.2%}</code>\n"
-                message += f"   └ 详情: <code>{out_gb:.2f}GB / {inc_gb:.2f}GB</code>\n"
+                    message += f"\n{status_icon} <b>{name}</b>\n"
+                    message += f"   └ 占比: <code>{usage:.2%}</code>\n"
+                    message += f"   └ 详情: <code>{out_gb:.2f}GB / {inc_gb:.2f}GB</code>\n"
 
             if processed_servers:
                 message += f"\n<b>✅ 处理结果:</b>\n"
@@ -382,7 +369,9 @@ class HetznerServerManager:
                  time_window: Optional[TimeWindowManager] = None,
                  ssh_keys: List[int] = None,
                  server_types: List[int] = None,
-                 max_servers: int = 0):  # 新增：最大服务器数量
+                 max_servers: int = 0,
+                 initial_snapshot_id: int = None,
+                 qb_loadbalancer_url: str = None):  # 🆕 qBittorrent负载均衡器URL
         self.api_key = api_key
         self.traffic_threshold = traffic_threshold
         self.telegram_notifier = telegram_notifier
@@ -390,7 +379,9 @@ class HetznerServerManager:
         self.time_window = time_window
         self.ssh_keys = ssh_keys or []
         self.server_types = server_types or [116, 110, 117]
-        self.max_servers = max_servers  # 0 表示不限制
+        self.max_servers = max_servers
+        self.initial_snapshot_id = initial_snapshot_id
+        self.qb_loadbalancer_url = qb_loadbalancer_url  # 🆕 保存负载均衡器URL
         self.base_url = "https://api.hetzner.cloud/v1"
         self.headers = {
             'Authorization': f'Bearer {api_key}',
@@ -413,13 +404,29 @@ class HetznerServerManager:
             logging.error(f"获取服务器列表失败: {e}")
             return None
 
+    def get_server_ips(self) -> List[str]:
+        """🆕 获取所有正在运行的服务器IP地址"""
+        servers = self.get_servers()
+        if not servers:
+            return []
+        
+        ips = []
+        for server in servers:
+            # 检查服务器状态是否为运行中
+            if server.get('status') == 'running':
+                # 获取 IPv4 地址
+                if server.get('public_net') and server['public_net'].get('ipv4'):
+                    ip = server['public_net']['ipv4']['ip']
+                    ips.append(ip)
+        
+        return ips
+
     def delete_server(self, server_id: int) -> bool:
         """删除服务器"""
         try:
             logging.info(f"正在删除服务器: {server_id}...")
             requests.delete(f"{self.base_url}/servers/{server_id}", headers=self.headers).raise_for_status()
             
-            # 等待服务器完全删除
             for _ in range(24):
                 response = requests.get(f"{self.base_url}/servers/{server_id}", headers=self.headers)
                 if response.status_code == 404:
@@ -431,6 +438,34 @@ class HetznerServerManager:
             logging.error(f"删除服务器异常: {e}")
             return False
 
+    def _notify_loadbalancer_new_ip(self, new_ip: str) -> bool:
+        """🆕 通知负载均衡器新IP（用于初始创建）"""
+        if not self.qb_loadbalancer_url:
+            return False
+        
+        try:
+            url = f"{self.qb_loadbalancer_url.rstrip('/')}/api/update-ip"
+            payload = {
+                'new_ip': new_ip,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            logging.info(f"📡 通知负载均衡器新IP: {new_ip}")
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            if result.get('success'):
+                logging.info(f"✓ 负载均衡器已接收新IP")
+                return True
+            else:
+                logging.warning(f"⚠ 负载均衡器处理失败: {result.get('message')}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"✗ 通知负载均衡器失败: {e}")
+            return False
+
     def create_server_with_types(self, server_config: Dict, snapshot_id: int) -> Optional[Dict]:
         """尝试使用多种服务器类型创建服务器(不指定IP)"""
         for server_type_id in self.server_types:
@@ -439,11 +474,11 @@ class HetznerServerManager:
             payload = {
                 "name": server_config['name'],
                 "ssh_keys": self.ssh_keys,
-                "location": 2,  # nbg1
+                "location": 2,
                 "image": int(snapshot_id),
                 "server_type": server_type_id,
                 "firewalls": [],
-                "public_net": {"enable_ipv4": True, "enable_ipv6": True},  # 不指定IP,随机分配
+                "public_net": {"enable_ipv4": True, "enable_ipv6": True},
                 "start_after_create": True
             }
 
@@ -465,7 +500,6 @@ class HetznerServerManager:
                             'new_ip': new_ip
                         }
                     
-                    # 处理错误
                     try:
                         error_data = response.json()
                         if 'error' in error_data:
@@ -494,19 +528,20 @@ class HetznerServerManager:
             if not snapshot_id:
                 return {'name': name, 'success': False, 'error': '缺失快照ID'}
 
-            # 删除旧服务器
             if not self.delete_server(server['id']):
                 return {'name': name, 'success': False, 'error': '删除失败'}
             
-            # 等待一段时间确保资源释放
             time.sleep(10)
             
-            # 创建新服务器
             result = self.create_server_with_types(server, snapshot_id)
             if not result:
                 return {'name': name, 'success': False, 'error': '创建失败'}
             
             new_ip = result['new_ip']
+            
+            # 🆕 通知负载均衡器IP变更
+            if self.qb_loadbalancer_url and old_ip and new_ip:
+                self._notify_loadbalancer_ip_change(old_ip, new_ip)
             
             return {
                 'name': name,
@@ -516,6 +551,77 @@ class HetznerServerManager:
                 'server_type': result['server_type']
             }
 
+    def _notify_loadbalancer_ip_change(self, old_ip: str, new_ip: str) -> bool:
+        """🆕 通知负载均衡器IP已变更"""
+        if not self.qb_loadbalancer_url:
+            return False
+        
+        try:
+            url = f"{self.qb_loadbalancer_url.rstrip('/')}/api/update-ip"
+            payload = {
+                'old_ip': old_ip,
+                'new_ip': new_ip,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            logging.info(f"📡 通知负载均衡器: {old_ip} → {new_ip}")
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            if result.get('success'):
+                updated_count = result.get('updated_count', 0)
+                logging.info(f"✓ 负载均衡器已更新 {updated_count} 个实例")
+                return True
+            else:
+                logging.warning(f"⚠ 负载均衡器更新失败: {result.get('message')}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"✗ 通知负载均衡器失败: {e}")
+            return False
+
+    def create_initial_servers(self, count: int) -> List[Dict]:
+        """创建初始服务器（工作时段开始时）"""
+        if not self.initial_snapshot_id:
+            logging.error("✗ 未配置初始快照ID，无法创建服务器")
+            return []
+        
+        logging.info(f"🌅 开始创建 {count} 台初始服务器...")
+        created = []
+        
+        for i in range(1, count + 1):
+            server_config = {
+                'name': f'hetzner-server-{i:02d}'
+            }
+            
+            result = self.create_server_with_types(server_config, self.initial_snapshot_id)
+            
+            if result:
+                created.append({
+                    'name': server_config['name'],
+                    'success': True,
+                    'new_ip': result['new_ip'],
+                    'server_type': result['server_type']
+                })
+                
+                # 🆕 每创建一个服务器就立即通知负载均衡器
+                if self.qb_loadbalancer_url:
+                    self._notify_loadbalancer_new_ip(result['new_ip'])
+                
+                logging.info(f"✓ 初始服务器 {i}/{count} 创建成功")
+            else:
+                created.append({
+                    'name': server_config['name'],
+                    'success': False,
+                    'error': '创建失败'
+                })
+                logging.error(f"✗ 初始服务器 {i}/{count} 创建失败")
+            
+            if i < count:
+                time.sleep(5)
+        
+        return created
 
     def delete_all_servers_for_night(self) -> List[Dict]:
         """夜间模式：删除所有服务器"""
@@ -545,20 +651,63 @@ class HetznerServerManager:
     def should_rebuild_more_servers(self, current_count: int) -> bool:
         """判断是否应该继续重建服务器"""
         if self.max_servers == 0:
-            return True  # 不限制数量
+            return True
         return current_count < self.max_servers
 
     def check_and_process_servers(self):
         """检查并处理服务器 - 主逻辑"""
-        # 检查时间窗口
         if self.time_window:
-            self.time_window.reset_delete_flag()
+            self.time_window.reset_flags_on_work_start()
             
-            # 打印状态信息
             status = self.time_window.get_status_info()
             logging.info(status)
             
-            # 夜间删除逻辑（非工作时段且未删除）
+            if self.time_window.should_create_initial_servers():
+                servers = self.get_servers()
+                if not servers or len(servers) == 0:
+                    logging.info("🌅 检测到无服务器，开始创建初始服务器...")
+                    
+                    target_count = self.max_servers if self.max_servers > 0 else 3
+                    created = self.create_initial_servers(target_count)
+                    
+                    self.time_window.mark_as_created()
+                    
+                    if self.downloader_api and created:
+                        current_servers = self.get_servers()
+                        if current_servers:
+                            server_ips = [
+                                s['public_net']['ipv4']['ip'] 
+                                for s in current_servers 
+                                if s.get('public_net') and s['public_net'].get('ipv4')
+                            ]
+                            
+                            if server_ips:
+                                logging.info(f"🔄 开始同步下载器IP...")
+                                sync_result = self.downloader_api.sync_downloaders_with_servers(server_ips)
+                                
+                                for result in created:
+                                    if result.get('success'):
+                                        result['downloader_sync'] = f"更新 {sync_result['updated']} 个"
+                    
+                    if self.telegram_notifier:
+                        time_info = ""
+                        if self.time_window:
+                            time_range = f"{self.time_window.start_time.strftime('%H:%M')}-{self.time_window.end_time.strftime('%H:%M')}"
+                            if self.time_window.crosses_midnight:
+                                time_range += " (跨午夜)"
+                            time_info = f"工作时段: {time_range}"
+                        
+                        report = self.telegram_notifier.create_check_report(
+                            [],
+                            [],
+                            created,
+                            time_info,
+                            initial_creation=True
+                        )
+                        self.telegram_notifier.send_message(report)
+                    
+                    return
+            
             if self.time_window.should_delete_servers():
                 deleted = self.delete_all_servers_for_night()
                 self.time_window.mark_as_deleted()
@@ -574,12 +723,10 @@ class HetznerServerManager:
                     self.telegram_notifier.send_message(msg)
                 return
             
-            # 非工作时段不执行检查
             if not self.time_window.is_in_work_window():
                 logging.info("⏸ 非工作时段，跳过检查")
                 return
 
-        # 正常工作时段的检查逻辑
         servers = self.get_servers()
         if not servers: 
             return
@@ -610,7 +757,6 @@ class HetznerServerManager:
             if usage >= self.traffic_threshold:
                 high_traffic.append(info)
                 
-                # 检查是否达到数量限制
                 if self.should_rebuild_more_servers(rebuilt_count):
                     result = self.rebuild_server(server)
                     processed.append(result)
@@ -624,9 +770,7 @@ class HetznerServerManager:
                         'error': f'已达数量限制 ({self.max_servers})'
                     })
 
-        # 🔧 新逻辑：处理完所有服务器后，统一同步下载器IP
         if self.downloader_api and processed:
-            # 获取所有当前服务器的IP
             current_servers = self.get_servers()
             if current_servers:
                 server_ips = [
@@ -639,13 +783,11 @@ class HetznerServerManager:
                     logging.info(f"🔄 开始同步下载器IP到服务器列表...")
                     sync_result = self.downloader_api.sync_downloaders_with_servers(server_ips)
                     
-                    # 将同步结果添加到处理记录中
                     if sync_result['updated'] > 0:
                         for result in processed:
                             if result.get('success'):
                                 result['downloader_sync'] = f"更新 {sync_result['updated']} 个"
 
-        # 发送报告
         if self.telegram_notifier:
             try:
                 time_info = ""
@@ -679,6 +821,9 @@ class HetznerServerManager:
                 time_range += " (跨午夜)"
             logging.info(f"⏰ 工作时段: {time_range}")
         
+        if self.initial_snapshot_id:
+            logging.info(f"💾 初始快照ID: {self.initial_snapshot_id}")
+        
         while True:
             try:
                 self.check_and_process_servers()
@@ -701,11 +846,105 @@ class HetznerServerManager:
                 time.sleep(60)
 
 
+# 🆕 Flask API 服务
+app = Flask(__name__)
+manager_instance = None  # 全局管理器实例
+
+
+@app.route('/api/servers/ips', methods=['GET'])
+def get_server_ips():
+    """API端点：获取所有正在运行的服务器IP"""
+    if not manager_instance:
+        return jsonify({
+            'success': False,
+            'error': 'Server manager not initialized'
+        }), 500
+    
+    try:
+        ips = manager_instance.get_server_ips()
+        return jsonify({
+            'success': True,
+            'count': len(ips),
+            'ips': ips,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logging.error(f"API错误: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/servers/status', methods=['GET'])
+def get_servers_status():
+    """API端点：获取服务器详细状态"""
+    if not manager_instance:
+        return jsonify({
+            'success': False,
+            'error': 'Server manager not initialized'
+        }), 500
+    
+    try:
+        servers = manager_instance.get_servers()
+        if not servers:
+            return jsonify({
+                'success': True,
+                'count': 0,
+                'servers': []
+            })
+        
+        server_list = []
+        for server in servers:
+            server_info = {
+                'id': server.get('id'),
+                'name': server.get('name'),
+                'status': server.get('status'),
+                'ip': server['public_net']['ipv4']['ip'] if server.get('public_net') and server['public_net'].get('ipv4') else None,
+                'server_type': server.get('server_type', {}).get('name'),
+                'location': server.get('datacenter', {}).get('name'),
+                'created': server.get('created')
+            }
+            server_list.append(server_info)
+        
+        return jsonify({
+            'success': True,
+            'count': len(server_list),
+            'servers': server_list,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logging.error(f"API错误: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+def run_flask_api(host='0.0.0.0', port=5000):
+    """运行 Flask API 服务"""
+    logging.info(f"🌐 API服务启动在 http://{host}:{port}")
+    logging.info(f"📍 可用端点:")
+    logging.info(f"   - GET /api/servers/ips - 获取所有服务器IP")
+    logging.info(f"   - GET /api/servers/status - 获取服务器详细状态")
+    app.run(host=host, port=port, debug=False, use_reloader=False)
+
+
 def main():
+    global manager_instance
+    
     # 基础配置
     API_KEY = os.getenv('HETZNER_API_KEY')
     THRESHOLD = float(os.getenv('TRAFFIC_THRESHOLD', '0.8'))
     INTERVAL = int(os.getenv('CHECK_INTERVAL', '1800'))
+    
+    # API 服务配置
+    ENABLE_API = os.getenv('ENABLE_API', 'true').lower() == 'true'
+    API_HOST = os.getenv('API_HOST', '0.0.0.0')
+    API_PORT = int(os.getenv('API_PORT', '5000'))
+    
+    # 🆕 负载均衡器配置
+    QB_LOADBALANCER_URL = os.getenv('QB_LOADBALANCER_URL')  # 例如: http://localhost:5000
     
     # SSH 密钥配置
     keys_raw = os.getenv('HETZNER_SSH_KEYS', '')
@@ -717,6 +956,11 @@ def main():
 
     # 服务器数量限制
     max_servers = int(os.getenv('MAX_SERVERS', '0'))
+    
+    # 初始快照ID配置
+    initial_snapshot_id = os.getenv('INITIAL_SNAPSHOT_ID')
+    if initial_snapshot_id:
+        initial_snapshot_id = int(initial_snapshot_id)
 
     # Telegram 通知配置
     tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -740,7 +984,7 @@ def main():
         print("❌ 错误: 环境变量中未找到 HETZNER_API_KEY")
         return
 
-    manager = HetznerServerManager(
+    manager_instance = HetznerServerManager(
         API_KEY, 
         THRESHOLD, 
         notifier, 
@@ -748,10 +992,19 @@ def main():
         time_window,
         ssh_keys, 
         server_types,
-        max_servers
+        max_servers,
+        initial_snapshot_id,
+        QB_LOADBALANCER_URL  # 🆕 传入负载均衡器URL
     )
     
-    manager.run_monitor(INTERVAL)
+    # 启动 API 服务（在单独线程中）
+    if ENABLE_API:
+        api_thread = Thread(target=run_flask_api, args=(API_HOST, API_PORT), daemon=True)
+        api_thread.start()
+        time.sleep(1)  # 等待API服务启动
+    
+    # 启动监控服务
+    manager_instance.run_monitor(INTERVAL)
 
 
 if __name__ == "__main__":
